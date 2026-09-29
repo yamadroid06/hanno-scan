@@ -86,15 +86,15 @@ function onCode(raw){
   }
 }
 
-// GASへ登録（no-cors送信 → 結果照会で成否確認）
+// GASへ登録（scanpost のGETで確実に登録 → 結果照会で成否確認）
 async function register(kojin, job){
-  busy=true; tell('登録中…'); 
-  const body = new URLSearchParams({ key:SCAN_KEY, kojin:kojin, job:job });
+  busy=true; tell('登録中…');
   try{
-    // 送信（no-corsなので応答は読めない。届けることに徹する）
-    await fetch(GAS_URL, { method:'POST', mode:'no-cors',
-      headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:body.toString() });
-    // 少し待ってから結果照会（就職ログへの書き込み完了を待つ）
+    // scanpost のGETで確実に登録する（動作確認済みの方式）
+    const url = GAS_URL + '?mode=scanpost&key=' + encodeURIComponent(SCAN_KEY)
+              + '&kojin=' + encodeURIComponent(kojin) + '&job=' + encodeURIComponent(job);
+    await fetch(url, { method:'GET', mode:'no-cors' });
+    // 書き込み完了を待ってから結果照会
     await new Promise(r=>setTimeout(r,900));
     const res = await checkResult(kojin);
     if(res && res.ok){
