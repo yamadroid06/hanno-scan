@@ -6,33 +6,39 @@
 <title>ミニはんのう｜スマホ受付</title>
 <!-- ZXing（バーコード読み取り）をCDNから読み込み -->
 <script src="https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/zxing-browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js"></script>
 <style>
   :root{ --g:#1b5e20; --g2:#2e7d32; --line:#c8e6c9; }
   *{box-sizing:border-box;}
   body{margin:0;font-family:sans-serif;background:#e8f5e9;color:#1b3a2b;
-    padding:env(safe-area-inset-top,0) 12px env(safe-area-inset-bottom,0);}
-  h1{font-size:20px;color:var(--g);margin:14px 0 6px;}
-  .step{font-size:14px;color:#5f7a68;margin-bottom:8px;}
-  #view{width:100%;max-width:520px;aspect-ratio:4/3;background:#12351f;border-radius:14px;
+    padding:env(safe-area-inset-top,0) 10px env(safe-area-inset-bottom,0);}
+  h1{font-size:18px;color:var(--g);margin:10px 0 4px;display:flex;align-items:center;justify-content:space-between;}
+  .badge{font-size:12px;font-weight:700;padding:2px 10px;border-radius:20px;background:#e8f5e9;color:var(--g);}
+  .step{font-size:13px;color:#5f7a68;margin-bottom:6px;}
+  /* スキャン枠：上部・高さは控えめにして結果パネルを広く取る */
+  #view{width:100%;max-width:520px;height:34vh;min-height:170px;background:#12351f;border-radius:12px;
     overflow:hidden;margin:0 auto;position:relative;}
   #view video{width:100%;height:100%;object-fit:cover;}
-  .frame{position:absolute;inset:18% 10%;border:3px solid rgba(255,255,255,.7);border-radius:12px;pointer-events:none;}
-  .msg{max-width:520px;margin:10px auto;background:#12351f;color:#fff;border-radius:12px;padding:14px;font-size:15px;text-align:center;min-height:64px;display:flex;align-items:center;justify-content:center;}
-  .ok{background:#fff;color:#1b5e20;border:2px solid var(--line);}
-  .ok .nm{font-size:26px;font-weight:800;color:var(--g);}
-  .ok .jb{font-size:18px;color:var(--g2);margin-top:2px;}
-  .ok .tm{font-size:15px;color:#5f7a68;margin-top:4px;}
-  .row{max-width:520px;margin:10px auto;display:flex;gap:8px;}
+  .frame{position:absolute;inset:14% 8%;border:3px solid rgba(255,255,255,.7);border-radius:10px;pointer-events:none;}
+  /* 結果パネル：大きく見せる主役 */
+  .msg{max-width:520px;margin:10px auto;background:#12351f;color:#fff;border-radius:14px;padding:18px 14px;
+    font-size:17px;text-align:center;min-height:34vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;}
+  .msg.ok{background:#fff;color:#1b5e20;border:3px solid var(--line);}
+  .msg .lead{font-size:16px;color:#5f7a68;}
+  .msg .nm{font-size:44px;font-weight:800;color:var(--g);line-height:1.1;margin:2px 0;}
+  .msg .jb{font-size:26px;font-weight:800;color:var(--g2);}
+  .msg .tm{font-size:18px;color:#5f7a68;margin-top:6px;}
+  .msg .next{font-size:15px;color:#8aa392;margin-top:8px;}
+  .row{max-width:520px;margin:8px auto;display:flex;gap:8px;}
   button{flex:1;font-size:17px;font-weight:700;padding:14px;border-radius:12px;border:2px solid var(--g2);
     background:var(--g2);color:#fff;cursor:pointer;}
   button.sub{background:#fff;color:var(--g2);}
-  .manual{max-width:520px;margin:8px auto;display:flex;gap:8px;}
+  .manual{max-width:520px;margin:8px auto 14px;display:flex;gap:8px;}
   .manual input{flex:1;font-size:17px;padding:12px;border-radius:12px;border:2px solid var(--line);}
-  .badge{display:inline-block;font-size:13px;font-weight:700;padding:2px 10px;border-radius:20px;background:#e8f5e9;color:var(--g);margin-left:8px;}
 </style>
 </head>
 <body>
-  <h1>ミニはんのう｜スマホ受付 <span class="badge" id="phase">① 市民</span></h1>
+  <h1>職安 スマホ受付 <span class="badge" id="phase">① 市民</span></h1>
   <div class="step" id="step">「カメラ開始」を押して、市民カードを枠に映してください。</div>
 
   <div id="view"><div class="frame"></div></div>
@@ -57,6 +63,7 @@ const SCAN_KEY = 'hanno2026key';  // ①のGAS側 SCAN_KEY_ と必ず同じ値�
 let reader = null, controls = null, active = false;
 let citizen = '';           // 読み取り済みの市民13桁
 let busy = false;
+let lastCode = '', lastAt = 0;   // 同じコードの連続誤読を無視するため
 const $ = id => document.getElementById(id);
 
 // 全角→半角＋数字だけ抽出
@@ -67,8 +74,15 @@ function setStep(){
   else { $('phase').textContent='① 市民'; $('step').textContent='市民カードを枠に映してください。'; }
 }
 
-function tell(html, ok){
-  const m=$('msg'); m.className = 'msg' + (ok?' ok':''); m.innerHTML = html;
+// 結果パネル表示（ok=trueで白背景の大きい表示）
+function tellPlain(text){ const m=$('msg'); m.className='msg'; m.innerHTML='<div>'+text+'</div>'; }
+function tellOK(name, jobName, start, end){
+  const m=$('msg'); m.className='msg ok';
+  m.innerHTML='<div class="lead">登録しました</div>'+
+    '<div class="nm">'+esc(name)+'</div>'+
+    '<div class="jb">'+esc(jobName)+' に就職</div>'+
+    '<div class="tm">開始 '+esc(start)+' → 終了 '+esc(end)+'</div>'+
+    '<div class="next">つぎの市民カードを読み取れます</div>';
 }
 
 // バーコードを1件読み取ったときの処理（カメラ・手入力の共通入口）
@@ -76,73 +90,75 @@ function onCode(raw){
   if(busy) return;
   const v = norm(raw);
   if(!citizen){
-    // まだ市民が未確定：13桁なら市民として採用
-    if(v.length===13){ citizen=v; beep(880); setStep(); tell('市民カードを読み取りました。<br>つぎに「しごと」を映してください。'); }
+    if(v.length===13){ citizen=v; beep(880); setStep(); tellPlain('市民カードを読み取りました。<br>つぎに「しごと」を映してください。'); }
     return;
   }
-  // 市民は確定済み：1〜3桁を仕事Noとして登録
-  if(v.length>=1 && v.length<=3){
-    register(citizen, v);
-  }
+  if(v.length>=1 && v.length<=3){ register(citizen, v); }
 }
 
 // GASへ登録（scanpost のGETで確実に登録 → 結果照会で成否確認）
 async function register(kojin, job){
-  busy=true; tell('登録中…');
+  busy=true; tellPlain('登録中…');
   try{
-    // scanpost のGETで確実に登録する（動作確認済みの方式）
     const url = GAS_URL + '?mode=scanpost&key=' + encodeURIComponent(SCAN_KEY)
               + '&kojin=' + encodeURIComponent(kojin) + '&job=' + encodeURIComponent(job);
     await fetch(url, { method:'GET', mode:'no-cors' });
-    // 書き込み完了を待ってから結果照会
-    await new Promise(r=>setTimeout(r,900));
+    await new Promise(r=>setTimeout(r,700));
     const res = await checkResult(kojin);
-    if(res && res.ok){
-      beep(880);
-      tell('<div>登録しました</div><div class="nm">'+esc(res.name)+'</div>'+
-           '<div class="jb">'+esc(res.jobName)+' に就職</div>'+
-           '<div class="tm">開始 '+esc(res.start)+' → 終了 '+esc(res.end)+'</div>'+
-           '<div class="tm">つぎの市民カードを読み取れます</div>', true);
-    }else{
-      beep(320);
-      tell('登録を確認できませんでした。<br>もう一度「しごと」を映すか、手入力してください。');
-    }
+    if(res && res.ok){ beep(880); tellOK(res.name, res.jobName, res.start, res.end); }
+    else { beep(320); tellPlain('登録を確認できませんでした。<br>もう一度「しごと」を映すか、手入力してください。'); }
   }catch(e){
-    beep(320);
-    tell('通信に失敗しました。電波を確認して、もう一度お試しください。');
+    beep(320); tellPlain('通信に失敗しました。<br>電波を確認して、もう一度お試しください。');
   }finally{
-    citizen=''; setStep(); busy=false;   // 次の人へ
+    citizen=''; setStep(); busy=false; lastCode=''; lastAt=0;
   }
 }
 
-// 結果照会（GET）。no-corsではないので応答JSONを読める
+// 結果照会（GET）
 async function checkResult(kojin){
   const url = GAS_URL + '?mode=scanresult&key=' + encodeURIComponent(SCAN_KEY) + '&kojin=' + encodeURIComponent(kojin);
   try{ const r = await fetch(url); return await r.json(); }catch(e){ return null; }
 }
 
-// ==== カメラ制御 ====
+// ==== カメラ制御（読み取り対象を絞って高速化）====
 async function startCamera(){
   if(active) return;
-  if(!window.isSecureContext || !navigator.mediaDevices?.getUserMedia){
-    tell('このページはHTTPSで開いてください。'); return;
-  }
-  if(!window.ZXingBrowser?.BrowserMultiFormatReader){
-    tell('読み取り機能を読み込めませんでした。再読み込みしてください。'); return;
-  }
+  if(!window.isSecureContext || !navigator.mediaDevices?.getUserMedia){ tellPlain('このページはHTTPSで開いてください。'); return; }
+  if(!window.ZXingBrowser?.BrowserMultiFormatReader){ tellPlain('読み取り機能を読み込めませんでした。<br>再読み込みしてください。'); return; }
   try{
-    tell('カメラの使用を許可してください。');
-    reader = new ZXingBrowser.BrowserMultiFormatReader();
-    // 背面カメラ優先で連続読み取り
+    tellPlain('カメラの使用を許可してください。');
+
+    // 読み取り形式を EAN-13 / CODE128 / CODE39 だけに限定して解析を軽くする
+    const hints = new Map();
+    const ZX = window.ZXing || window.ZXingBrowser;   // ライブラリ側の定数を使う
+    if(ZX && ZX.DecodeHintType && ZX.BarcodeFormat){
+      hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS, [
+        ZX.BarcodeFormat.EAN_13, ZX.BarcodeFormat.CODE_128, ZX.BarcodeFormat.CODE_39
+      ]);
+      hints.set(ZX.DecodeHintType.TRY_HARDER, false);
+    }
+    // スキャン間隔を短くして反応を速く
+    reader = new ZXingBrowser.BrowserMultiFormatReader(hints, { delayBetweenScanAttempts:80, delayBetweenScanSuccess:150 });
+
+    const video = $('view').appendChild(document.createElement('video'));
+    video.setAttribute('playsinline','true'); video.muted=true;
     controls = await reader.decodeFromConstraints(
-      { audio:false, video:{ facingMode:{ ideal:'environment' } } },
-      $('view').appendChild(document.createElement('video')),
-      (result)=>{ if(result) onCode(result.getText()); }
+      { audio:false, video:{ facingMode:{ ideal:'environment' }, width:{ ideal:1280 }, height:{ ideal:720 } } },
+      video,
+      (result)=>{
+        if(!result) return;
+        const text = result.getText();
+        const t = Date.now();
+        // 直前と同じコードを短時間に拾い直したら無視（誤連発・重複防止）
+        if(text===lastCode && (t-lastAt)<1200) return;
+        lastCode=text; lastAt=t;
+        onCode(text);
+      }
     );
     active=true; $('camBtn').textContent='カメラ動作中';
-    tell('市民カードを枠に映してください。');
+    tellPlain('市民カードを枠に映してください。');
   }catch(err){
-    tell('カメラを使用できません。ブラウザのカメラ許可を確認するか、手入力をご利用ください。');
+    tellPlain('カメラを使用できません。<br>ブラウザのカメラ許可を確認するか、手入力をご利用ください。');
   }
 }
 
@@ -151,7 +167,7 @@ function beep(hz){ try{ const a=new (window.AudioContext||window.webkitAudioCont
 
 // ==== ボタン ====
 $('camBtn').onclick = startCamera;
-$('resetBtn').onclick = ()=>{ citizen=''; setStep(); tell('やり直しました。市民カードから読み取ってください。'); };
+$('resetBtn').onclick = ()=>{ citizen=''; setStep(); lastCode=''; lastAt=0; tellPlain('やり直しました。<br>市民カードから読み取ってください。'); };
 $('okBtn').onclick = ()=>{ const v=$('manual').value; $('manual').value=''; onCode(v); };
 $('manual').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); $('okBtn').click(); } });
 
