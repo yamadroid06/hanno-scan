@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ミニはんのう｜スマホ受付</title>
+<!-- ZXing（バーコード読み取り）をCDNから読み込み -->
+<script src="https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/zxing-browser.min.js"></script>
+<style>
+  :root{ --g:#1b5e20; --g2:#2e7d32; --line:#c8e6c9; }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:sans-serif;background:#e8f5e9;color:#1b3a2b;
+    padding:env(safe-area-inset-top,0) 12px env(safe-area-inset-bottom,0);}
+  h1{font-size:20px;color:var(--g);margin:14px 0 6px;}
+  .step{font-size:14px;color:#5f7a68;margin-bottom:8px;}
+  #view{width:100%;max-width:520px;aspect-ratio:4/3;background:#12351f;border-radius:14px;
+    overflow:hidden;margin:0 auto;position:relative;}
+  #view video{width:100%;height:100%;object-fit:cover;}
+  .frame{position:absolute;inset:18% 10%;border:3px solid rgba(255,255,255,.7);border-radius:12px;pointer-events:none;}
+  .msg{max-width:520px;margin:10px auto;background:#12351f;color:#fff;border-radius:12px;padding:14px;font-size:15px;text-align:center;min-height:64px;display:flex;align-items:center;justify-content:center;}
+  .ok{background:#fff;color:#1b5e20;border:2px solid var(--line);}
+  .ok .nm{font-size:26px;font-weight:800;color:var(--g);}
+  .ok .jb{font-size:18px;color:var(--g2);margin-top:2px;}
+  .ok .tm{font-size:15px;color:#5f7a68;margin-top:4px;}
+  .row{max-width:520px;margin:10px auto;display:flex;gap:8px;}
+  button{flex:1;font-size:17px;font-weight:700;padding:14px;border-radius:12px;border:2px solid var(--g2);
+    background:var(--g2);color:#fff;cursor:pointer;}
+  button.sub{background:#fff;color:var(--g2);}
+  .manual{max-width:520px;margin:8px auto;display:flex;gap:8px;}
+  .manual input{flex:1;font-size:17px;padding:12px;border-radius:12px;border:2px solid var(--line);}
+  .badge{display:inline-block;font-size:13px;font-weight:700;padding:2px 10px;border-radius:20px;background:#e8f5e9;color:var(--g);margin-left:8px;}
+</style>
+</head>
+<body>
+  <h1>ミニはんのう｜スマホ受付 <span class="badge" id="phase">① 市民</span></h1>
+  <div class="step" id="step">「カメラ開始」を押して、市民カードを枠に映してください。</div>
+
+  <div id="view"><div class="frame"></div></div>
+
+  <div class="msg" id="msg">カメラは停止中です。</div>
+
+  <div class="row">
+    <button id="camBtn">カメラ開始</button>
+    <button id="resetBtn" class="sub">やり直す</button>
+  </div>
+  <div class="manual">
+    <input id="manual" inputmode="numeric" placeholder="スキャナ／手入力">
+    <button id="okBtn" class="sub" style="flex:0 0 90px;">決定</button>
+  </div>
+
+<script>
+// ==== 設定：ここだけ自分の値に差し替える ====
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbxxWK_S6lLYjwqrupjXTiDF7PZ-XAtiEgbMy_mMe3hraZm9Q7mKioosOvP2z4fzlmTE/exec';
+const SCAN_KEY = 'hanno2026key';  // ①のGAS側 SCAN_KEY_ と必ず同じ値に
+
+// ==== 状態 ====
+let reader = null, controls = null, active = false;
+let citizen = '';           // 読み取り済みの市民13桁
+let busy = false;
+const $ = id => document.getElementById(id);
+
+// 全角→半角＋数字だけ抽出
+const norm = s => String(s||'').normalize('NFKC').replace(/[^\d]/g,'');
+
+function setStep(){
+  if(citizen){ $('phase').textContent='② しごと'; $('step').textContent='つづけて「しごとのバーコード」を映してください。'; }
+  else { $('phase').textContent='① 市民'; $('step').textContent='市民カードを枠に映してください。'; }
+}
+
+function tell(html, ok){
+  const m=$('msg'); m.className = 'msg' + (ok?' ok':''); m.innerHTML = html;
+}
+
+// バーコードを1件読み取ったときの処理（カメラ・手入力の共通入口）
+function onCode(raw){
+  if(busy) return;
+  const v = norm(raw);
+  if(!citizen){
+    // まだ市民が未確定：13桁なら市民として採用
+    if(v.length===13){ citizen=v; beep(880); setStep(); tell('市民カードを読み取りました。<br>つぎに「しごと」を映してください。'); }
+    return;
+  }
+  // 市民は確定済み：1〜3桁を仕事Noとして登録
+  if(v.length>=1 && v.length<=3){
+    register(citizen, v);
+  }
+}
+
+// GASへ登録（no-cors送信 → 結果照会で成否確認）
+async function register(kojin, job){
+  busy=true; tell('登録中…'); 
+  const body = new URLSearchParams({ key:SCAN_KEY, kojin:kojin, job:job });
+  try{
+    // 送信（no-corsなので応答は読めない。届けることに徹する）
+    await fetch(GAS_URL, { method:'POST', mode:'no-cors',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:body.toString() });
+    // 少し待ってから結果照会（就職ログへの書き込み完了を待つ）
+    await new Promise(r=>setTimeout(r,900));
+    const res = await checkResult(kojin);
+    if(res && res.ok){
+      beep(880);
+      tell('<div>登録しました</div><div class="nm">'+esc(res.name)+'</div>'+
+           '<div class="jb">'+esc(res.jobName)+' に就職</div>'+
+           '<div class="tm">開始 '+esc(res.start)+' → 終了 '+esc(res.end)+'</div>'+
+           '<div class="tm">つぎの市民カードを読み取れます</div>', true);
+    }else{
+      beep(320);
+      tell('登録を確認できませんでした。<br>もう一度「しごと」を映すか、手入力してください。');
+    }
+  }catch(e){
+    beep(320);
+    tell('通信に失敗しました。電波を確認して、もう一度お試しください。');
+  }finally{
+    citizen=''; setStep(); busy=false;   // 次の人へ
+  }
+}
+
+// 結果照会（GET）。no-corsではないので応答JSONを読める
+async function checkResult(kojin){
+  const url = GAS_URL + '?mode=scanresult&key=' + encodeURIComponent(SCAN_KEY) + '&kojin=' + encodeURIComponent(kojin);
+  try{ const r = await fetch(url); return await r.json(); }catch(e){ return null; }
+}
+
+// ==== カメラ制御 ====
+async function startCamera(){
+  if(active) return;
+  if(!window.isSecureContext || !navigator.mediaDevices?.getUserMedia){
+    tell('このページはHTTPSで開いてください。'); return;
+  }
+  if(!window.ZXingBrowser?.BrowserMultiFormatReader){
+    tell('読み取り機能を読み込めませんでした。再読み込みしてください。'); return;
+  }
+  try{
+    tell('カメラの使用を許可してください。');
+    reader = new ZXingBrowser.BrowserMultiFormatReader();
+    // 背面カメラ優先で連続読み取り
+    controls = await reader.decodeFromConstraints(
+      { audio:false, video:{ facingMode:{ ideal:'environment' } } },
+      $('view').appendChild(document.createElement('video')),
+      (result)=>{ if(result) onCode(result.getText()); }
+    );
+    active=true; $('camBtn').textContent='カメラ動作中';
+    tell('市民カードを枠に映してください。');
+  }catch(err){
+    tell('カメラを使用できません。ブラウザのカメラ許可を確認するか、手入力をご利用ください。');
+  }
+}
+
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function beep(hz){ try{ const a=new (window.AudioContext||window.webkitAudioContext)(); const o=a.createOscillator(); o.frequency.value=hz; o.connect(a.destination); o.start(); setTimeout(()=>{o.stop();a.close();},120);}catch(e){} }
+
+// ==== ボタン ====
+$('camBtn').onclick = startCamera;
+$('resetBtn').onclick = ()=>{ citizen=''; setStep(); tell('やり直しました。市民カードから読み取ってください。'); };
+$('okBtn').onclick = ()=>{ const v=$('manual').value; $('manual').value=''; onCode(v); };
+$('manual').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); $('okBtn').click(); } });
+
+setStep();
+</script>
+</body>
+</html>
