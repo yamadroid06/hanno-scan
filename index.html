@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ミニはんのう｜スマホ受付</title>
-<!-- ZXing（バーコード読み取り）をCDNから読み込み -->
 <script src="https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/zxing-browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js"></script>
 <style>
@@ -15,43 +14,52 @@
   h1{font-size:18px;color:var(--g);margin:10px 0 4px;display:flex;align-items:center;justify-content:space-between;}
   .badge{font-size:12px;font-weight:700;padding:2px 10px;border-radius:20px;background:#e8f5e9;color:var(--g);}
   .step{font-size:13px;color:#5f7a68;margin-bottom:6px;}
-  /* スキャン枠：上部・高さは控えめにして結果パネルを広く取る */
   #view{width:100%;max-width:520px;height:34vh;min-height:170px;background:#12351f;border-radius:12px;
     overflow:hidden;margin:0 auto;position:relative;}
   #view video{width:100%;height:100%;object-fit:cover;}
-  .frame{position:absolute;inset:14% 8%;border:3px solid rgba(255,255,255,.7);border-radius:10px;pointer-events:none;}
-  /* 結果パネル：大きく見せる主役 */
+  /* 読み取り受付中は枠を緑に光らせて「いま読んでいる」を明示 */
+  .frame{position:absolute;inset:14% 8%;border:3px solid rgba(255,255,255,.6);border-radius:10px;pointer-events:none;transition:.1s;}
+  #view.reading .frame{border-color:#7CFC66;box-shadow:0 0 0 3px rgba(124,252,102,.4) inset;}
   .msg{max-width:520px;margin:10px auto;background:#12351f;color:#fff;border-radius:14px;padding:18px 14px;
-    font-size:17px;text-align:center;min-height:34vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;}
+    font-size:17px;text-align:center;min-height:30vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;}
   .msg.ok{background:#fff;color:#1b5e20;border:3px solid var(--line);}
   .msg .lead{font-size:16px;color:#5f7a68;}
   .msg .nm{font-size:44px;font-weight:800;color:var(--g);line-height:1.1;margin:2px 0;}
   .msg .jb{font-size:26px;font-weight:800;color:var(--g2);}
   .msg .tm{font-size:18px;color:#5f7a68;margin-top:6px;}
   .msg .next{font-size:15px;color:#8aa392;margin-top:8px;}
+  /* 大きなトリガーボタン（押している間だけ読み取り） */
+  .trigger{max-width:520px;margin:10px auto;}
+  #scanBtn{width:100%;font-size:22px;font-weight:800;padding:22px;border-radius:16px;border:none;
+    background:var(--g2);color:#fff;user-select:none;-webkit-user-select:none;touch-action:manipulation;}
+  #scanBtn.holding{background:#124a16;transform:scale(.99);}
+  #scanBtn:disabled{opacity:.5;}
   .row{max-width:520px;margin:8px auto;display:flex;gap:8px;}
-  button{flex:1;font-size:17px;font-weight:700;padding:14px;border-radius:12px;border:2px solid var(--g2);
-    background:var(--g2);color:#fff;cursor:pointer;}
-  button.sub{background:#fff;color:var(--g2);}
+  button.sub{flex:1;font-size:16px;font-weight:700;padding:12px;border-radius:12px;border:2px solid var(--g2);background:#fff;color:var(--g2);}
   .manual{max-width:520px;margin:8px auto 14px;display:flex;gap:8px;}
   .manual input{flex:1;font-size:17px;padding:12px;border-radius:12px;border:2px solid var(--line);}
+  .manual button{flex:0 0 90px;font-size:16px;font-weight:700;padding:12px;border-radius:12px;border:2px solid var(--g2);background:#fff;color:var(--g2);}
 </style>
 </head>
 <body>
   <h1>職安 スマホ受付 <span class="badge" id="phase">① 市民</span></h1>
-  <div class="step" id="step">「カメラ開始」を押して、市民カードを枠に映してください。</div>
+  <div class="step" id="step">「カメラ開始」を押し、読み取りたいバーコードに向けて下のボタンを押している間だけ読み取ります。</div>
 
   <div id="view"><div class="frame"></div></div>
 
   <div class="msg" id="msg">カメラは停止中です。</div>
 
+  <!-- メインのトリガー：押している間だけ読み取り -->
+  <div class="trigger">
+    <button id="scanBtn" disabled>押している間だけ読み取り</button>
+  </div>
   <div class="row">
-    <button id="camBtn">カメラ開始</button>
+    <button id="camBtn" class="sub">カメラ開始</button>
     <button id="resetBtn" class="sub">最初から</button>
   </div>
   <div class="manual">
     <input id="manual" inputmode="numeric" placeholder="スキャナ／手入力">
-    <button id="okBtn" class="sub" style="flex:0 0 90px;">決定</button>
+    <button id="okBtn">決定</button>
   </div>
 
 <script>
@@ -61,110 +69,101 @@ const SCAN_KEY = 'hanno2026key';  // ①のGAS側 SCAN_KEY_ と必ず同じ値�
 
 // ==== 状態 ====
 let reader = null, controls = null, active = false;
-let citizen = '';           // 読み取り済みの市民13桁
-let busy = false;
-let lastCode = '', lastAt = 0;   // 同じコードの連続誤読を無視するため
+let citizen = '';        // 読み取り済みの市民13桁
+let busy = false;        // 登録通信中
+let reading = false;     // ★ボタンを押している間だけ true（この間だけデコード結果を採用）
 const $ = id => document.getElementById(id);
 
-// 全角→半角＋数字だけ抽出
 const norm = s => String(s||'').normalize('NFKC').replace(/[^\d]/g,'');
 
 function setStep(){
-  if(citizen){ $('phase').textContent='② しごと'; $('step').textContent='つづけて「しごとのバーコード」を映してください。'; }
-  else { $('phase').textContent='① 市民'; $('step').textContent='市民カードを枠に映してください。'; }
+  if(citizen){ $('phase').textContent='② しごと'; $('step').textContent='しごとのバーコードに向けて、ボタンを押している間だけ読み取ります。'; }
+  else { $('phase').textContent='① 市民'; $('step').textContent='市民カードに向けて、ボタンを押している間だけ読み取ります。'; }
 }
 
-// 結果パネル表示（ok=trueで白背景の大きい表示）
 function tellPlain(text){ const m=$('msg'); m.className='msg'; m.innerHTML='<div>'+text+'</div>'; }
 function tellOK(name, jobName, start, end){
   const m=$('msg'); m.className='msg ok';
-  m.innerHTML='<div class="lead">登録しました</div>'+
-    '<div class="nm">'+esc(name)+'</div>'+
+  m.innerHTML='<div class="lead">登録しました</div><div class="nm">'+esc(name)+'</div>'+
     '<div class="jb">'+esc(jobName)+' に就職</div>'+
     '<div class="tm">開始 '+esc(start)+' → 終了 '+esc(end)+'</div>'+
     '<div class="next">つぎの市民カードを読み取れます</div>';
 }
 
-// バーコードを1件読み取ったときの処理（カメラ・手入力の共通入口）
+// デコード結果を採用（読み取り受付中のみ）
 function onCode(raw){
   if(busy) return;
   const v = norm(raw);
   if(!citizen){
-    if(v.length===13){ citizen=v; beep(880); setStep(); tellPlain('市民カードを読み取りました。<br>つぎに「しごと」を映してください。'); }
+    if(v.length===13){ citizen=v; beep(880); stopReading(); setStep(); tellPlain('市民カードを読み取りました。<br>つぎに「しごと」をボタンを押して読み取ってください。'); }
     return;
   }
-  if(v.length>=1 && v.length<=3){ register(citizen, v); }
+  if(v.length>=1 && v.length<=3){ stopReading(); register(citizen, v); }
 }
 
-// GASへ登録（scanpost で登録 → 結果照会を数回リトライして確実に拾う）
+// ★読み取り受付の ON / OFF（ボタンの押下・離しで切り替え）
+function startReading(){
+  if(!active || busy) return;
+  reading=true; $('view').classList.add('reading'); $('scanBtn').classList.add('holding');
+}
+function stopReading(){
+  reading=false; $('view').classList.remove('reading'); $('scanBtn').classList.remove('holding');
+}
+
+// GASへ登録（結果照会を数回リトライして確実に拾う）
 async function register(kojin, job){
-  busy=true; tellPlain('登録中…');
+  busy=true; tellPlain('登録中…'); $('scanBtn').disabled=true;
   try{
     const url = GAS_URL + '?mode=scanpost&key=' + encodeURIComponent(SCAN_KEY)
               + '&kojin=' + encodeURIComponent(kojin) + '&job=' + encodeURIComponent(job);
-    // 登録リクエストを送る（応答は読めないが届ける）
     await fetch(url, { method:'GET', mode:'no-cors' });
-
-    // 結果照会を最大5回まで、間隔を空けて試す（遅延しても最終的に拾う）
     let res=null;
     for(let i=0;i<5;i++){
-      await new Promise(r=>setTimeout(r, i===0?500:800));  // 500ms → 以降800msずつ
+      await new Promise(r=>setTimeout(r, i===0?500:800));
       res = await checkResult(kojin);
-      if(res && res.ok) break;   // 成功を拾えたら即抜ける
+      if(res && res.ok) break;
     }
-
     if(res && res.ok){ beep(880); tellOK(res.name, res.jobName, res.start, res.end); }
-    else { beep(320); tellPlain('登録を確認できませんでした。<br>「やり直す」を押して、もう一度お試しください。'); }
+    else { beep(320); tellPlain('登録を確認できませんでした。<br>「最初から」を押して、もう一度お試しください。'); }
   }catch(e){
     beep(320); tellPlain('通信に失敗しました。<br>電波を確認して、もう一度お試しください。');
   }finally{
-    citizen=''; setStep(); busy=false; lastCode=''; lastAt=0;
+    citizen=''; setStep(); busy=false; $('scanBtn').disabled=false;
   }
 }
 
-// 結果照会（GET）
 async function checkResult(kojin){
   const url = GAS_URL + '?mode=scanresult&key=' + encodeURIComponent(SCAN_KEY) + '&kojin=' + encodeURIComponent(kojin);
   try{ const r = await fetch(url); return await r.json(); }catch(e){ return null; }
 }
 
-// ==== カメラ制御（読み取り対象を絞って高速化）====
+// ==== カメラ制御 ====
 async function startCamera(){
   if(active) return;
   if(!window.isSecureContext || !navigator.mediaDevices?.getUserMedia){ tellPlain('このページはHTTPSで開いてください。'); return; }
   if(!window.ZXingBrowser?.BrowserMultiFormatReader){ tellPlain('読み取り機能を読み込めませんでした。<br>再読み込みしてください。'); return; }
   try{
     tellPlain('カメラの使用を許可してください。');
-
-    // 読み取り形式を EAN-13 / CODE128 / CODE39 だけに限定して解析を軽くする
     const hints = new Map();
-    const ZX = window.ZXing || window.ZXingBrowser;   // ライブラリ側の定数を使う
+    const ZX = window.ZXing || window.ZXingBrowser;
     if(ZX && ZX.DecodeHintType && ZX.BarcodeFormat){
-      hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS, [
-        ZX.BarcodeFormat.EAN_13, ZX.BarcodeFormat.CODE_128, ZX.BarcodeFormat.CODE_39
-      ]);
+      hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS, [ ZX.BarcodeFormat.EAN_13, ZX.BarcodeFormat.CODE_39, ZX.BarcodeFormat.CODE_128 ]);
       hints.set(ZX.DecodeHintType.TRY_HARDER, false);
     }
-    // スキャン間隔を短くして反応を速く
-    reader = new ZXingBrowser.BrowserMultiFormatReader(hints, { delayBetweenScanAttempts:80, delayBetweenScanSuccess:150 });
-
+    reader = new ZXingBrowser.BrowserMultiFormatReader(hints, { delayBetweenScanAttempts:80, delayBetweenScanSuccess:120 });
     const video = $('view').appendChild(document.createElement('video'));
     video.setAttribute('playsinline','true'); video.muted=true;
     controls = await reader.decodeFromConstraints(
       { audio:false, video:{ facingMode:{ ideal:'environment' }, width:{ ideal:640 }, height:{ ideal:480 } } },
       video,
       (result)=>{
-        if(!result) return;
-        const text = result.getText();
-        const t = Date.now();
-        // 直前と同じコードを短時間に拾い直したら無視（誤連発・重複防止）
-        if(text===lastCode && (t-lastAt)<1200) return;
-        lastCode=text; lastAt=t;
-        onCode(text);
+        // ★ボタンを押している間（reading=true）だけ結果を採用。それ以外は無視
+        if(!reading || !result) return;
+        onCode(result.getText());
       }
     );
-    active=true; $('camBtn').textContent='カメラ動作中';
-    tellPlain('市民カードを枠に映してください。');
+    active=true; $('camBtn').textContent='カメラ動作中'; $('scanBtn').disabled=false;
+    tellPlain('読み取りたいバーコードにかざし、<br>下のボタンを押している間だけ読み取ります。');
   }catch(err){
     tellPlain('カメラを使用できません。<br>ブラウザのカメラ許可を確認するか、手入力をご利用ください。');
   }
@@ -173,9 +172,16 @@ async function startCamera(){
 function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function beep(hz){ try{ const a=new (window.AudioContext||window.webkitAudioContext)(); const o=a.createOscillator(); o.frequency.value=hz; o.connect(a.destination); o.start(); setTimeout(()=>{o.stop();a.close();},120);}catch(e){} }
 
-// ==== ボタン ====
+// ==== ボタン操作 ====
+// トリガーボタン：押している間だけ読み取り（マウス・タッチ両対応）
+const sb=$('scanBtn');
+sb.addEventListener('pointerdown', e=>{ e.preventDefault(); startReading(); });
+sb.addEventListener('pointerup',   e=>{ e.preventDefault(); stopReading(); });
+sb.addEventListener('pointercancel', ()=> stopReading());
+sb.addEventListener('pointerleave', ()=> stopReading());
+
 $('camBtn').onclick = startCamera;
-$('resetBtn').onclick = ()=>{ citizen=''; setStep(); lastCode=''; lastAt=0; tellPlain('市民カードの読み取りに戻りました。<br>（登録の取り消しではありません）'); };
+$('resetBtn').onclick = ()=>{ citizen=''; stopReading(); setStep(); tellPlain('市民カードの読み取りに戻りました。<br>（登録の取り消しではありません）'); };
 $('okBtn').onclick = ()=>{ const v=$('manual').value; $('manual').value=''; onCode(v); };
 $('manual').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); $('okBtn').click(); } });
 
