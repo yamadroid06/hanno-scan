@@ -47,7 +47,7 @@
 
   <div class="row">
     <button id="camBtn">カメラ開始</button>
-    <button id="resetBtn" class="sub">やり直す</button>
+    <button id="resetBtn" class="sub">最初から</button>
   </div>
   <div class="manual">
     <input id="manual" inputmode="numeric" placeholder="スキャナ／手入力">
@@ -96,17 +96,25 @@ function onCode(raw){
   if(v.length>=1 && v.length<=3){ register(citizen, v); }
 }
 
-// GASへ登録（scanpost のGETで確実に登録 → 結果照会で成否確認）
+// GASへ登録（scanpost で登録 → 結果照会を数回リトライして確実に拾う）
 async function register(kojin, job){
   busy=true; tellPlain('登録中…');
   try{
     const url = GAS_URL + '?mode=scanpost&key=' + encodeURIComponent(SCAN_KEY)
               + '&kojin=' + encodeURIComponent(kojin) + '&job=' + encodeURIComponent(job);
+    // 登録リクエストを送る（応答は読めないが届ける）
     await fetch(url, { method:'GET', mode:'no-cors' });
-    await new Promise(r=>setTimeout(r,700));
-    const res = await checkResult(kojin);
+
+    // 結果照会を最大5回まで、間隔を空けて試す（遅延しても最終的に拾う）
+    let res=null;
+    for(let i=0;i<5;i++){
+      await new Promise(r=>setTimeout(r, i===0?500:800));  // 500ms → 以降800msずつ
+      res = await checkResult(kojin);
+      if(res && res.ok) break;   // 成功を拾えたら即抜ける
+    }
+
     if(res && res.ok){ beep(880); tellOK(res.name, res.jobName, res.start, res.end); }
-    else { beep(320); tellPlain('登録を確認できませんでした。<br>もう一度「しごと」を映すか、手入力してください。'); }
+    else { beep(320); tellPlain('登録を確認できませんでした。<br>「やり直す」を押して、もう一度お試しください。'); }
   }catch(e){
     beep(320); tellPlain('通信に失敗しました。<br>電波を確認して、もう一度お試しください。');
   }finally{
@@ -167,7 +175,7 @@ function beep(hz){ try{ const a=new (window.AudioContext||window.webkitAudioCont
 
 // ==== ボタン ====
 $('camBtn').onclick = startCamera;
-$('resetBtn').onclick = ()=>{ citizen=''; setStep(); lastCode=''; lastAt=0; tellPlain('やり直しました。<br>市民カードから読み取ってください。'); };
+$('resetBtn').onclick = ()=>{ citizen=''; setStep(); lastCode=''; lastAt=0; tellPlain('市民カードの読み取りに戻りました。<br>（登録の取り消しではありません）'); };
 $('okBtn').onclick = ()=>{ const v=$('manual').value; $('manual').value=''; onCode(v); };
 $('manual').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); $('okBtn').click(); } });
 
