@@ -110,31 +110,38 @@ function stopReading(){
   reading=false; $('view').classList.remove('reading'); $('scanBtn').classList.remove('holding');
 }
 
-// GASへ登録（結果照会を数回リトライして確実に拾う）
+// GASへ登録（応答JSONを直接読む。弾かれた理由も表示できる）
 async function register(kojin, job){
   busy=true; tellPlain('登録中…'); $('scanBtn').disabled=true;
   try{
     const url = GAS_URL + '?mode=scanpost&key=' + encodeURIComponent(SCAN_KEY)
               + '&kojin=' + encodeURIComponent(kojin) + '&job=' + encodeURIComponent(job);
-    await fetch(url, { method:'GET', mode:'no-cors' });
-    let res=null;
-    for(let i=0;i<5;i++){
-      await new Promise(r=>setTimeout(r, i===0?500:800));
-      res = await checkResult(kojin);
-      if(res && res.ok) break;
+    // no-corsを外して応答を読む（GASのJSON返却を直接受け取る）
+    const r = await fetch(url, { method:'GET' });
+    const res = await r.json();
+    if(res && res.ok){
+      beep(880); tellOK(res.name, res.jobName, res.start, res.end);
+    }else{
+      // 弾かれた理由（満員・休業・閉業・二重就労）を表示
+      beep(320);
+      tellPlain('登録できませんでした<br><span style="font-size:20px;color:#c62828;font-weight:800">'+esc((res&&res.message)||'')+'</span><br>別の店を読み取ってください。');
     }
-    if(res && res.ok){ beep(880); tellOK(res.name, res.jobName, res.start, res.end); }
-    else { beep(320); tellPlain('登録を確認できませんでした。<br>「最初から」を押して、もう一度お試しください。'); }
   }catch(e){
-    beep(320); tellPlain('通信に失敗しました。<br>電波を確認して、もう一度お試しください。');
+    // 応答が読めない環境のときの保険：no-cors送信＋結果照会に自動で切り替え
+    try{
+      await fetch(GAS_URL + '?mode=scanpost&key=' + encodeURIComponent(SCAN_KEY)
+                + '&kojin=' + encodeURIComponent(kojin) + '&job=' + encodeURIComponent(job),
+                { method:'GET', mode:'no-cors' });
+      let res=null;
+      for(let i=0;i<5;i++){ await new Promise(r=>setTimeout(r,i===0?500:800)); res=await checkResult(kojin); if(res&&res.ok)break; }
+      if(res && res.ok){ beep(880); tellOK(res.name,res.jobName,res.start,res.end); }
+      else { beep(320); tellPlain('登録できませんでした。<br>満員・休業・閉業・二重就労の可能性があります。<br>別の店を読み取ってください。'); }
+    }catch(e2){
+      beep(320); tellPlain('通信に失敗しました。<br>電波を確認して、もう一度お試しください。');
+    }
   }finally{
-    citizen=''; setStep(); busy=false; $('scanBtn').disabled=false;
+    citizen=''; setStep(); busy=false; lastCode=''; lastAt=0;
   }
-}
-
-async function checkResult(kojin){
-  const url = GAS_URL + '?mode=scanresult&key=' + encodeURIComponent(SCAN_KEY) + '&kojin=' + encodeURIComponent(kojin);
-  try{ const r = await fetch(url); return await r.json(); }catch(e){ return null; }
 }
 
 // ==== カメラ制御 ====
